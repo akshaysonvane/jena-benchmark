@@ -1,0 +1,43 @@
+buildscript {
+  repositories {
+    maven {url 'http://developer.marklogic.com/maven2/'}
+  }
+}
+
+plugins {
+    id 'java'
+    id 'eclipse'
+    id 'idea'
+    id "me.champeau.gradle.jmh" version "0.4.5"
+}
+
+sourceSets {
+    jmh
+}
+
+repositories {
+    jcenter()
+    maven {url 'http://developer.marklogic.com/maven2/'}
+    mavenLocal()
+}
+
+jmh {
+    duplicateClassesStrategy = 'warn'
+    threads = 1
+}
+
+dependencies {
+    jmhCompile project
+    compile 'org.openjdk.jmh:jmh-core:1.14.1'
+    compile 'org.openjdk.jmh:jmh-generator-annprocess:1.14.1'
+    compile 'com.marklogic:marklogic-client-api:4.0.3'
+    compile ('com.marklogic:marklogic-jena:3.0.5')
+    compile ('com.marklogic:marklogic-rdf4j:1.1.0')
+    compile ('com.marklogic:marklogic-xcc:9.0.3')
+    compile ('com.marklogic:marklogic-client-api:5.0-SNAPSHOT')
+}
+
+task runXmlLoad(type: JavaExec) {
+    classpath = sourceSets.jmh.runtimeClasspath
+    main = 'com.marklogic.rdfbench.XMLTripleLoader'
+}
