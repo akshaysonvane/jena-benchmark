@@ -55,6 +55,7 @@ import java.util.concurrent.*;
 public class XMLTripleLoader {
 
     private static Logger logger = LoggerFactory.getLogger(XMLTripleLoader.class);
+    private static String HOST = "f23-runner";
 
     protected String genUri(Path entry) {
         return entry
@@ -65,7 +66,7 @@ public class XMLTripleLoader {
 
     private DatabaseClient client() {
         //return DatabaseClientFactory.newClient("localhost",8000,
-        return DatabaseClientFactory.newClient("f23-runner",8000,
+        return DatabaseClientFactory.newClient(HOST,8000,
                 new DatabaseClientFactory.DigestAuthContext(
                 "admin", "admin"));
     }
@@ -348,9 +349,9 @@ public class XMLTripleLoader {
 
         Long time = System.currentTimeMillis();
 
+        loader.parseTurtleAndLoad();
         //loader.xcc600kTriples();
         //loader.loadDMSDKXMLTriples();
-        loader.parseTurtleAndLoad();
         //loader.rdf4jLoadParsedTriples();
         //loader.loadWithBatches();
         //loader.jenaLoad();
