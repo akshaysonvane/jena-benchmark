@@ -26,14 +26,16 @@ import org.apache.jena.riot.system.StreamRDF;
 import org.apache.jena.sparql.core.DatasetGraph;
 import org.apache.jena.sparql.core.Quad;
 import org.eclipse.rdf4j.RDF4JException;
+import org.eclipse.rdf4j.model.Literal;
 import org.eclipse.rdf4j.model.Model;
 import org.eclipse.rdf4j.model.Statement;
+import org.eclipse.rdf4j.model.Value;
 import org.eclipse.rdf4j.model.impl.LinkedHashModel;
+import org.eclipse.rdf4j.model.impl.SimpleValueFactory;
 import org.eclipse.rdf4j.query.GraphQueryResult;
 import org.eclipse.rdf4j.query.QueryResults;
-import org.eclipse.rdf4j.rio.RDFFormat;
-import org.eclipse.rdf4j.rio.RDFParser;
-import org.eclipse.rdf4j.rio.Rio;
+import org.eclipse.rdf4j.query.parser.sparql.SPARQLUtil;
+import org.eclipse.rdf4j.rio.*;
 import org.eclipse.rdf4j.rio.helpers.StatementCollector;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.slf4j.Logger;
@@ -65,8 +67,8 @@ public class XMLTripleLoader {
     }
 
     private DatabaseClient client() {
-        //return DatabaseClientFactory.newClient("localhost",8000,
-        return DatabaseClientFactory.newClient(HOST,8000,
+        return DatabaseClientFactory.newClient("localhost",8000,
+        //return DatabaseClientFactory.newClient(HOST,8000,
                 new DatabaseClientFactory.DigestAuthContext(
                 "admin", "admin"));
     }
@@ -75,7 +77,7 @@ public class XMLTripleLoader {
     public void xcc600kTriples() throws URISyntaxException, XccConfigException, RequestException, InterruptedException, ExecutionException {
 
         ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(18);
-        URI uri = new URI("xcc://admin:admin@f23-runner:8000/Documents");
+        URI uri = new URI("xcc://admin:admin@localhost:8000/Documents");
         ContentSource contentSource =
                 ContentSourceFactory.newContentSource (uri);
 
@@ -161,7 +163,7 @@ public class XMLTripleLoader {
                 .newWriteBatcher()
                 .withBatchSize(4)
                 .withThreadCount(24)
-                .withTransactionSize(Integer.MAX_VALUE)
+                //.withTransactionSize(Integer.MAX_VALUE)
                 .onBatchSuccess(new WriteBatchListener() {
                     @Override
                     public void processEvent(WriteBatch batch) {
@@ -344,12 +346,111 @@ public class XMLTripleLoader {
 
     }
 
+    /////////////////////////////////////////////////
+    public void parseTurtleAndLoadForRDF4J() throws IOException{
+        DatabaseClient client = client();
+
+        DataMovementManager movementManager = client.newDataMovementManager();
+        WriteBatcher batcher = movementManager
+                .newWriteBatcher()
+                .withBatchSize(4)
+                .withThreadCount(24)
+                //.withTransactionSize(Integer.MAX_VALUE)
+                .onBatchSuccess(new WriteBatchListener() {
+                    @Override
+                    public void processEvent(WriteBatch batch) {
+                        logger.debug("Batch loaded");
+                    }
+                })
+                .onBatchFailure(new WriteFailureListener() {
+                                    @Override
+                                    public void processFailure(WriteBatch batch, Throwable failure) {
+                                        //transaction.rollback();
+                                    }
+                                }
+                );
+
+        InputStream input = new FileInputStream("data/turtletriples/turtle600k.ttl");
+
+        RDFParser parser = Rio.createParser(RDFFormat.TURTLE, SimpleValueFactory.getInstance());
+        parser.setRDFHandler(new RDFHandler() {
+            StringBuilder sb;
+            int i=0;
+            int j=0;
+            int T_PER_DOC = 1000;
+
+            void startDoc() {
+                sb = new StringBuilder();
+                sb.append("<sem:triples xmlns:sem=\"http://marklogic.com/semantics\">\n");
+            }
+            void endDoc() {
+                sb.append("</sem:triples>\n");
+                batcher.add("/" + j++ + ".xml", new StringHandle(sb.toString()).withFormat(Format.XML));
+                try {
+                    Thread.sleep(15);  // avoid starting multiple transactions
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+            @Override
+            public void startRDF() throws RDFHandlerException {
+                startDoc();
+            }
+
+            @Override
+            public void endRDF() throws RDFHandlerException {
+                endDoc();
+                batcher.flushAndWait();
+            }
+
+            @Override
+            public void handleNamespace(String prefix, String uri) throws RDFHandlerException {
+
+            }
+
+            @Override
+            public void handleStatement(Statement st) throws RDFHandlerException {
+                i++;
+                if (i == T_PER_DOC) {
+                    i = 0;
+                    endDoc();
+                    startDoc();
+                }
+
+                sb.append("<sem:triple>\n");
+                sb.append("<sem:subject>").append(st.getSubject()).append("</sem:subject>\n");
+                sb.append("<sem:predicate>").append(st.getPredicate()).append("</sem:predicate>\n");
+                Value object = st.getObject();
+                if (object instanceof Literal) {
+                    Literal lit = (Literal) object;
+                    sb.append("<sem:object datatype=\"").append(lit.getDatatype()).append("\">").append(object.stringValue()).append("</sem:object>\n");
+                } else {
+                    sb.append("<sem:object>").append(object.stringValue()).append("</sem:object>\n");
+                }
+                sb.append("</sem:triple>\n");
+            }
+
+            @Override
+            public void handleComment(String comment) throws RDFHandlerException {
+
+            }
+        });
+
+        parser.parse(input, "http://example.org");
+
+        movementManager.startJob(batcher);
+
+        batcher.flushAndWait();
+        movementManager.stopJob(batcher);
+    }
+    /////////////////////////////////////////////////
+
     public static void main(String[] args) throws Exception {
         XMLTripleLoader loader = new XMLTripleLoader();
 
         Long time = System.currentTimeMillis();
 
-        loader.parseTurtleAndLoad();
+        //loader.parseTurtleAndLoad();
         //loader.xcc600kTriples();
         //loader.loadDMSDKXMLTriples();
         //loader.rdf4jLoadParsedTriples();
@@ -358,8 +459,10 @@ public class XMLTripleLoader {
         //loader.rdf4jLoadTurtle();
         //loader.rdf4jLoadNtriples();
         //loader.oneBigFile();
-        System.out.println("Time since load began:" + (System.currentTimeMillis() - time));
+        loader.parseTurtleAndLoadForRDF4J();
+        System.out.println("Time since load began:" + (System.currentTimeMillis() - time)/1000 + " seconds");
         System.out.println("Triple count: " + loader.queryTriples());
-        System.out.println("Time since load began:" + (System.currentTimeMillis() - time));
+        System.out.println("Time since load began:" + (System.currentTimeMillis() - time)/1000 + " seconds");
+        System.exit(0);
     }
 }
