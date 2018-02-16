@@ -7,10 +7,7 @@ import com.marklogic.client.Transaction;
 import com.marklogic.client.datamovement.*;
 import com.marklogic.client.document.DocumentWriteSet;
 import com.marklogic.client.document.XMLDocumentManager;
-import com.marklogic.client.io.FileHandle;
-import com.marklogic.client.io.Format;
-import com.marklogic.client.io.JacksonHandle;
-import com.marklogic.client.io.StringHandle;
+import com.marklogic.client.io.*;
 import com.marklogic.client.semantics.SPARQLQueryDefinition;
 import com.marklogic.client.semantics.SPARQLQueryManager;
 import com.marklogic.semantics.jena.MarkLogicDatasetGraph;
@@ -52,12 +49,140 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.*;
 
 public class XMLTripleLoader {
 
     private static Logger logger = LoggerFactory.getLogger(XMLTripleLoader.class);
-    private static String HOST = "f23-runner";
+    //private static String HOST = "localhost";
+    private static String HOST = "rh7-intel64-80-qa-dev-5";
+
+
+    // this is a streaming triple-to-xml serializer
+    private StreamRDF sink(WriteBatcher batcher) {
+        return new StreamRDF() {
+            int i = 0;
+            int j = 0;
+            int T_PER_DOC = 100;
+
+
+            public void startDoc() {
+               startDoc(graphCache.get("default"));
+            }
+            public void startDoc(StringBuilder sb) {
+                sb.append("<sem:triples xmlns:sem=\"http://marklogic.com/semantics\">\n");
+            }
+
+            public void endDoc() {
+                endDoc("default");
+            }
+            public void endDoc(String graph) {
+                StringBuilder sb = graphCache.get(graph);
+                sb.append("</sem:triples>\n");
+                //System.out.println(sb.toString());
+                if (j % 500 == 0) logger.debug("Added 500 documents");
+                if (graph != null) {
+                    DocumentMetadataHandle metadata = new DocumentMetadataHandle().withCollections(graph);
+                    batcher.add("/" + j++ + ".xml", metadata, new StringHandle(sb.toString()).withFormat(Format.XML));
+                } else {
+                    batcher.add("/" + j++ + ".xml", new StringHandle(sb.toString()).withFormat(Format.XML));
+                }
+                graphCache.remove(graph);
+                //try {
+                    //Thread.sleep(15);  // avoid starting multiple transactions
+                //} catch (InterruptedException e) {
+                    //e.printStackTrace();
+                //}
+            }
+
+
+            Map<String, StringBuilder> graphCache;
+            Map<String, Integer> tripleCounts;
+
+            @Override
+            public void start() {
+                graphCache = new ConcurrentHashMap<String,StringBuilder>();
+                graphCache.put("default", new StringBuilder());
+                startDoc();
+                tripleCounts = new ConcurrentHashMap<String,Integer>();
+            }
+
+            @Override
+            public void triple(Triple triple) {
+                i++;
+                if (i == T_PER_DOC) {
+                    i = 0;
+                    endDoc();
+                    StringBuilder sb = new StringBuilder();
+                    graphCache.put("default", sb);
+                    startDoc(graphCache.get("default"));
+                }
+
+                triple(graphCache.get("default"), triple);
+            }
+
+            private void triple(StringBuilder sb, Triple triple) {
+                //logger.debug("I got a triple");
+                sb.append("<sem:triple>\n");
+                sb.append("<sem:subject>" + triple.getSubject().getURI() + "</sem:subject>\n");
+                sb.append("<sem:predicate>" + triple.getPredicate().getURI() + "</sem:predicate>\n");
+                if (triple.getObject().isLiteral()) {
+                    sb.append("<sem:object datatype=\"" + triple.getObject().getLiteralDatatype().getURI() + "\">" + triple.getObject().getLiteralLexicalForm() + "</sem:object>\n");
+                } else {
+                    sb.append("<sem:object>" + triple.getObject().getURI() + "</sem:object>\n");
+                }
+                sb.append("</sem:triple>\n");
+
+            }
+
+            @Override
+            public void quad(Quad quad) {
+                String graph = quad.getGraph().getURI();
+                if (graph == null) {
+                    graph = "default";
+                }
+                Triple triple = quad.asTriple();
+
+                if (tripleCounts.containsKey(graph)) {
+                    int j = 1 + tripleCounts.get(graph);
+                    tripleCounts.put(graph, j);
+                    if (j == T_PER_DOC) {
+                        tripleCounts.put(graph, 0);
+                        endDoc(graph);
+                        graphCache.put(graph, new StringBuilder());
+                        startDoc(graphCache.get(graph));
+                    }
+                } else {
+                    tripleCounts.put(graph, 1);
+                    graphCache.put(graph, new StringBuilder());
+                    startDoc(graphCache.get(graph));
+                }
+                triple(graphCache.get(graph), triple);
+            }
+
+            @Override
+            public void base(String base) {
+
+            }
+
+            @Override
+            public void prefix(String prefix, String iri) {
+                logger.debug("I got a prefix");
+            }
+
+            @Override
+            public void finish() {
+                logger.debug("finish called.  map has " + graphCache.size() + " partial docs");
+                endDoc();
+                for (String key : graphCache.keySet()) {
+                    //logger.debug("Cleaning up partial graphs: " + key);
+                    endDoc(key);
+                }
+                batcher.flushAndWait();
+            }
+        };
+    }
 
     protected String genUri(Path entry) {
         return entry
@@ -155,6 +280,39 @@ public class XMLTripleLoader {
         batcher.flushAndWait();
     }
 
+    public void parseQuadsAndLoad() {
+        DatabaseClient client = client();
+
+        DataMovementManager movementManager = client.newDataMovementManager();
+        WriteBatcher batcher = movementManager
+                .newWriteBatcher()
+                .withBatchSize(3000)
+                .withThreadCount(24)
+                //.withTransactionSize(Integer.MAX_VALUE)
+                .onBatchSuccess(new WriteBatchListener() {
+                    @Override
+                    public void processEvent(WriteBatch batch) {
+                        logger.debug("Batch loaded");
+                    }
+                })
+                .onBatchFailure(new WriteFailureListener() {
+                                    @Override
+                                    public void processFailure(WriteBatch batch, Throwable failure) {
+                                        //transaction.rollback();
+                                    }
+                                }
+                );
+
+
+        movementManager.startJob(batcher);
+        RDFDataMgr.parse(sink(batcher), "file:data/nquads/Curriculum_Largest.nq");
+        //RDFDataMgr.parse(sink, "file:data/ntriples/ntriples600k.nt");
+
+        batcher.flushAndWait();
+        movementManager.stopJob(batcher);
+
+    }
+
     public void parseTurtleAndLoad() {
         DatabaseClient client = client();
 
@@ -179,77 +337,8 @@ public class XMLTripleLoader {
                 );
 
 
-        StreamRDF sink = new StreamRDF() {
-            StringBuilder sb;
-            int i=0;
-            int j=0;
-            int T_PER_DOC = 1000;
-
-            public void startDoc() {
-                sb = new StringBuilder();
-                sb.append("<sem:triples xmlns:sem=\"http://marklogic.com/semantics\">\n");
-            }
-            public void endDoc() {
-                sb.append("</sem:triples>\n");
-                batcher.add("/" + j++ + ".xml", new StringHandle(sb.toString()).withFormat(Format.XML));
-                try {
-                    Thread.sleep(15);  // avoid starting multiple transactions
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-            }
-            @Override
-            public void start() {
-                startDoc();
-            }
-
-            @Override
-            public void triple(Triple triple) {
-                i++;
-                if (i == T_PER_DOC) {
-                    i = 0;
-                    endDoc();
-                    startDoc();
-                }
-
-                //logger.debug("I got a triple");
-                sb.append("<sem:triple>\n");
-                sb.append("<sem:subject>" + triple.getSubject().getURI() + "</sem:subject>\n");
-                sb.append("<sem:predicate>" + triple.getPredicate().getURI() + "</sem:predicate>\n");
-                if (triple.getObject().isLiteral()) {
-                    sb.append("<sem:object datatype=\"" + triple.getObject().getLiteralDatatype().getURI() +  "\">" + triple.getObject().getLiteralLexicalForm() + "</sem:object>\n");
-                }
-                else {
-                    sb.append("<sem:object>" + triple.getObject().getURI() + "</sem:object>\n");
-                }
-                sb.append("</sem:triple>\n");
-
-            }
-
-            @Override
-            public void quad(Quad quad) {
-
-            }
-
-            @Override
-            public void base(String base) {
-
-            }
-
-            @Override
-            public void prefix(String prefix, String iri) {
-                logger.debug("I got a prefix");
-            }
-
-            @Override
-            public void finish() {
-                endDoc();
-                batcher.flushAndWait();
-            }
-        };
-
         movementManager.startJob(batcher);
-        RDFDataMgr.parse(sink, "file:data/turtletriples/turtle600k.ttl");
+        RDFDataMgr.parse(sink(batcher), "file:data/turtletriples/turtle600k.ttl");
         //RDFDataMgr.parse(sink, "file:data/ntriples/ntriples600k.nt");
 
         batcher.flushAndWait();
@@ -450,6 +539,8 @@ public class XMLTripleLoader {
 
         Long time = System.currentTimeMillis();
 
+
+        loader.parseQuadsAndLoad();
         //loader.parseTurtleAndLoad();
         //loader.xcc600kTriples();
         //loader.loadDMSDKXMLTriples();
@@ -459,7 +550,7 @@ public class XMLTripleLoader {
         //loader.rdf4jLoadTurtle();
         //loader.rdf4jLoadNtriples();
         //loader.oneBigFile();
-        loader.parseTurtleAndLoadForRDF4J();
+        //loader.parseTurtleAndLoadForRDF4J();
         System.out.println("Time since load began:" + (System.currentTimeMillis() - time)/1000 + " seconds");
         System.out.println("Triple count: " + loader.queryTriples());
         System.out.println("Time since load began:" + (System.currentTimeMillis() - time)/1000 + " seconds");
