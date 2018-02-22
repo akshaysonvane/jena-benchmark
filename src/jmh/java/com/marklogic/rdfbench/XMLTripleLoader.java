@@ -540,7 +540,7 @@ public class XMLTripleLoader {
         Long time = System.currentTimeMillis();
 
 
-        loader.parseQuadsAndLoad();
+        //loader.parseQuadsAndLoad();
         //loader.parseTurtleAndLoad();
         //loader.xcc600kTriples();
         //loader.loadDMSDKXMLTriples();
@@ -550,7 +550,7 @@ public class XMLTripleLoader {
         //loader.rdf4jLoadTurtle();
         //loader.rdf4jLoadNtriples();
         //loader.oneBigFile();
-        //loader.parseTurtleAndLoadForRDF4J();
+        loader.parseTurtleAndLoadForRDF4J();
         System.out.println("Time since load began:" + (System.currentTimeMillis() - time)/1000 + " seconds");
         System.out.println("Triple count: " + loader.queryTriples());
         System.out.println("Time since load began:" + (System.currentTimeMillis() - time)/1000 + " seconds");
