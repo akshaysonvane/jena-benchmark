@@ -30,4 +30,4 @@ node_modules/
 ye-olde-project
 data/onebigfile/xml600k.xml
 data/ntriples/ntriples600k.nt
-data/nquads/Curriculum_Largest.nq
+data/nquads/

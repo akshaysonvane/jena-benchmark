@@ -3,6 +3,7 @@ package com.marklogic.rdfbench;
 import com.marklogic.client.DatabaseClient;
 import com.marklogic.client.DatabaseClientFactory;
 import com.marklogic.client.Transaction;
+import com.marklogic.client.document.DocumentWriteSet;
 import com.marklogic.client.document.XMLDocumentManager;
 import com.marklogic.client.io.StringHandle;
 import org.eclipse.rdf4j.model.Literal;
@@ -18,18 +19,19 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadPoolExecutor;
 
-class Loader {
+class DocLoader {
 
     private DatabaseClient client() {
         return DatabaseClientFactory.newClient("localhost", 8000, new DatabaseClientFactory.DigestAuthContext("admin", "admin"));
     }
 
-    private ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(18);
+    private ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(24);
 
     private List<Future<?>> futures = new ArrayList<>();
 
     private Transaction tx;
     private XMLDocumentManager documentManager;
+    private DocumentWriteSet writeSet;
 
 
     public void parseTurtleAndLoadRDF4J() throws Exception {
@@ -42,7 +44,9 @@ class Loader {
             StringBuffer sb;
             int i = -1;
             int j = 0;
-            int T_PER_DOC = 2000;
+            int T_PER_DOC = 1000;
+            int DOCS_PER_BATCH = 4;
+            int n = 0;
 
             void startDoc() {
                 sb = new StringBuffer();
@@ -51,19 +55,30 @@ class Loader {
 
             void endDoc() {
                 sb.append("</sem:triples>\n");
-                futures.add(executor.submit(new Task(j++, sb.toString(), tx, documentManager)));
+                String st = sb.toString();
+                writeSet.add("/" + j++ + ".xml", new StringHandle(st));
+
+                n++;
+                if (n == DOCS_PER_BATCH) {
+                    n = 0;
+                    futures.add(executor.submit(new WTask(writeSet, tx, documentManager)));
+                    writeSet = documentManager.newWriteSet();
+                }
             }
 
             @Override
             public void startRDF() throws RDFHandlerException {
                 tx = client.openTransaction();
                 documentManager = client.newXMLDocumentManager();
+                writeSet = documentManager.newWriteSet();
                 startDoc();
             }
 
             @Override
             public void endRDF() throws RDFHandlerException {
+                n = DOCS_PER_BATCH - 1;
                 endDoc();
+                //futures.add(executor.submit(new WTask(writeSet, tx, documentManager)));
             }
 
             @Override
@@ -102,7 +117,7 @@ class Loader {
         parser.parse(input, "http://example.org");
 
         for (Future<?> future : futures) {
-            if(future.get() != null) {
+            if (future.get() != null) {
                 tx.rollback();
                 break;
             }
@@ -116,27 +131,24 @@ class Loader {
     }
 }
 
-class Task implements Runnable
-{
-    private int j;
-    private String string;
+class WTask implements Runnable {
+    private DocumentWriteSet writeSet;
     private Transaction tx;
     private XMLDocumentManager documentManager;
 
-    Task(int j, String string, Transaction tx, XMLDocumentManager documentManager)
-    {
-        this.j = j;
-        this.string = string;
+    WTask(DocumentWriteSet writeSet, Transaction tx, XMLDocumentManager documentManager) {
+        this.writeSet = writeSet;
         this.tx = tx;
         this.documentManager = documentManager;
     }
+
     @Override
     public void run() {
-        documentManager.write("/"+ j + ".xml", new StringHandle(string), tx);
+        documentManager.write(writeSet, tx);
     }
 }
 
-public class MultiThreadedClientSideParse {
+public class MultiThreadedClientSideParseUsingWriteset {
     public static void main(String[] args) {
         DocLoader docLoader = new DocLoader();
         try {
