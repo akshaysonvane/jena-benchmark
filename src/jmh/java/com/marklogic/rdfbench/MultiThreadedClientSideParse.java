@@ -138,10 +138,10 @@ class Task implements Runnable
 
 public class MultiThreadedClientSideParse {
     public static void main(String[] args) {
-        DocLoader docLoader = new DocLoader();
+        Loader loader = new Loader();
         try {
             long start = System.currentTimeMillis();
-            docLoader.parseTurtleAndLoadRDF4J();
+            loader.parseTurtleAndLoadRDF4J();
             System.out.println("Time since load began: " + (System.currentTimeMillis() - start) / 1000 + " seconds");
         } catch (Exception e) {
             e.printStackTrace();
